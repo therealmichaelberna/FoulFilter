@@ -50,6 +50,7 @@ discovered_words_list = []
 
 media_type = detect_media_type(file_path)
 
+print("hello world")
 
 if media_type == "unknown":
     print("Error: Unrecognized file type.")
