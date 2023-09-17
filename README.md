@@ -14,7 +14,7 @@ Automated Word Filtering of Audio/Video Files using VOSK.
 ## Usage
 ```cd foulfilter```
 
-```python3 find_and_remove.py input_video_file.mp4 "bad_words.txt"```
+```python3 find_and_remove.py input_video_file.mp4 "bad_words.txt"``` (bad_words.txt should be a plain text file with one word per line)
 
 #### Help:
 ```python3 find_and_remove.py -h```
