@@ -24,7 +24,7 @@ Automated Word Filtering of Audio/Video Files using VOSK.
 
 **--analysis_chunk_size=15** How many seconds to split files into when running through detection algorithm. Use this to lower system resource usage, especially with large files.
 
-**--no_edit'** Just analyze the file, don't edit
+**--no_edit** Just analyze the file, don't edit
 
 **--resume** Resume using previous analysis
 
