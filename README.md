@@ -1,5 +1,7 @@
 # FoulFilter
-Automated Word Filtering of Audio/Video Files using VOSK.
+<img src="logo.png" width="300">
+
+Automated Word Filtering of Audio/Video Files using VOSK and Python.
 
 ## Installation
 ### Pre-requisites
