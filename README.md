@@ -29,3 +29,5 @@ Automated Word Filtering of Audio/Video Files using VOSK.
 **--resume** Resume using previous analysis
 
 **--transcript** Path to transcript (optional, can improve accuracy if transcript is correct) It will not help with missed detections, but can improve incorrect detections.
+
+**--delete** delete words instead of replacing with silent audio
