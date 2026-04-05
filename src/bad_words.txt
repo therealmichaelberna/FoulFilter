@@ -1,0 +1,5 @@
+foo
+bar
+kanye
+starbucks
+apple

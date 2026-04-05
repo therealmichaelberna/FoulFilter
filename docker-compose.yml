@@ -1,0 +1,26 @@
+services:
+  foulfilter:
+    env_file:
+      - .env
+    build: .
+    image: foulfilter:latest
+    container_name: foulfilter_service
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mounts your local 'media' folder to the container's data folder
+      - ./data:/data
+      - ./src:/app
+    devices:
+      # These are critical for your AMD GPU (ROCm) direct pass-through for your AMD GPU (ROCm)
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - AI_ENHANCE=${AI_ENHANCE}
+      - HSA_OVERRIDE_GFX_VERSION=10.3.0 # Optional: Only if using certain RX 6000 cards
+    restart: always
