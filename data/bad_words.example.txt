@@ -1,0 +1,16 @@
+# FoulFilter Bad Words List
+# One word or phrase per line. Lines starting with # are ignored.
+# Matching is case- and punctuation-insensitive; phrases up to 3 words supported.
+#
+# This is a starter list. Add your own entries as needed.
+
+darn
+gosh
+heck
+dang
+fudge
+crud
+jerk
+shoot
+sucker
+butt

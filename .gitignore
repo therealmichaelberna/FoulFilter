@@ -216,5 +216,14 @@ __marimo__/
 .streamlit/secrets.toml
 
 # custom items
-data/
-src/bad_words.txt
+data/*
+!data/bad_words.example.txt
+.opencode/
+
+
+censored_*
+*_CENSORED.*
+*_scratch/
+*.span_*.wav
+*.mp3
+*.mp4

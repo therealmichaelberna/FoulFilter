@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FoulFilter</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <h1>FoulFilter</h1>
+  <p class="sub">Profanity removal for audio &amp; video — jobs run one at a time on the GPU.</p>
+</header>
+
+<main>
+  <section id="dropzone" aria-label="Upload area">
+    <input type="file" id="file-input" multiple hidden
+           accept=".mp3,.wav,.m4a,.m4b,.flac,.ogg,.opus,.wma,.mp4,.mkv,.mov,.avi,.webm">
+    <div id="drop-inner">
+      <strong>Drop files here</strong> or click to browse
+      <span class="hint" id="upload-limit"></span>
+    </div>
+  </section>
+
+  <section id="options">
+    <label>Censor method
+      <select id="censor-method">
+        <option value="silence">Silence</option>
+        <option value="bleep">Bleep (1 kHz)</option>
+        <option value="remove">Cut out (audio only)</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="opt-rescan"> Rescan pass
+      <span class="hint">(second offset detection run)</span>
+    </label>
+    <label><input type="checkbox" id="opt-debug"> Debug transcript</label>
+    <button id="upload-btn" disabled>Upload</button>
+    <button id="zip-btn" hidden>Download selected (.zip)</button>
+    <span id="ai-badge" class="badge" hidden>Smart Cut active</span>
+  </section>
+
+  <section id="jobs-section">
+    <h2>Jobs</h2>
+    <table id="jobs-table">
+      <thead>
+        <tr><th>File</th><th>Status</th><th style="width:34%">Progress</th><th></th></tr>
+      </thead>
+      <tbody id="jobs-body"></tbody>
+    </table>
+    <p class="note">Jobs and temp files are wiped when the container restarts — download results first.
+       Transcripts are kept, so re-uploading the same file skips GPU transcription.</p>
+  </section>
+</main>
+
+<div id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

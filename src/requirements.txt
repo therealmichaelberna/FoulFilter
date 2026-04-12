@@ -1,6 +1,13 @@
-beautifulsoup4==4.12.2
-ffmpeg_python==0.2.0
-python_magic==0.4.27
+# Torch is installed separately from AMD's ROCm wheel index (see Dockerfile) - do not add it here.
+transformers>=4.42
+accelerate>=0.30
 soundfile==0.12.1
-# vosk==0.3.45 # uncomment to use vosk
-whisperx
+ffmpeg-python==0.2.0
+python-magic==0.4.27
+whisperx>=3.1          # alignment only (ADR-0001); ctranslate2 wheel installs but is unused
+google-genai
+requests
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+pytest
