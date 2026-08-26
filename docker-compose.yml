@@ -1,0 +1,43 @@
+services:
+  foulfilter:
+    env_file:
+      - .env
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+      # Dev convenience: live-edit src without rebuilding.
+      # For production, comment this out - the image already contains the code.
+      - ./src:/app
+      - ./scripts:/scripts:ro
+    devices:
+      - "/dev/kfd:/dev/kfd"
+      - "/dev/dri:/dev/dri"
+    group_add:
+      - 44   # video
+      - 992  # render (adjust to your host's `getent group render`)
+    ipc: host
+    # Linux Docker doesn't define host.docker.internal by default;
+    # Smart Cut's local LLM mode needs it to reach a server on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE}
+      - CENSOR_METHOD=${CENSOR_METHOD}
+      - ALIGN_DEVICE=${ALIGN_DEVICE}
+      - WHISPER_MULTI_GPU=${WHISPER_MULTI_GPU}
+      - WHISPER_ATTN=${WHISPER_ATTN}
+      - ANALYSIS_CHUNK_SIZE=${ANALYSIS_CHUNK_SIZE}
+      - AI_ENHANCE=${AI_ENHANCE}
+      - AI_MODE=${AI_MODE}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - LOCAL_LLM_URL=${LOCAL_LLM_URL}
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL}
+      - UNLOAD_MODELS_AFTER_JOB=${UNLOAD_MODELS_AFTER_JOB}
