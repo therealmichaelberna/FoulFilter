@@ -85,6 +85,7 @@ tr:last-child td { border-bottom: none; }
 .progress-track { background: #0d1116; height: 10px; border-radius: 99px; overflow: hidden; }
 .progress-bar { height: 100%; width: 0%; background: var(--accent); transition: width .3s; border-radius: 99px; }
 .stage { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; min-height: 15px; }
+.eta { display: block; color: var(--accent); font-size: 12px; margin-top: 2px; min-height: 15px; }
 
 .chip {
   display: inline-block;

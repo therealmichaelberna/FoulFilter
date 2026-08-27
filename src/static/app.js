@@ -9,6 +9,8 @@ const jobsBody = $("#jobs-body");
 
 let selectedFiles = [];
 const rows = new Map(); // job_id -> tr element
+let historyMetrics = []; // historical job timings for ETA
+const jobState = new Map(); // job_id -> {prevProgress, stageStarted, clipDuration}
 
 // --- init ---------------------------------------------------------------
 fetch("/config").then(r => r.json()).then(cfg => {
@@ -16,11 +18,31 @@ fetch("/config").then(r => r.json()).then(cfg => {
   if (cfg.ai_enhance) $("#ai-badge").hidden = false;
 }).catch(() => {});
 
+fetch("/metrics").then(r => r.json()).then(m => {
+  historyMetrics = m || [];
+}).catch(() => {});
+
 fetch("/jobs").then(r => r.json()).then(jobs => {
   for (const job of jobs) renderRow(job);
 }).catch(() => {});
 
 connectEvents();
+
+// Refresh ETA labels every 5s (ETAs move as time passes even with no SSE events).
+setInterval(() => {
+  let anyActive = false;
+  for (const tr of rows.values()) {
+    const id = tr.dataset.jobId;
+    const st = jobState.get(id);
+    if (st && st.startedAt && st.active) {
+      anyActive = true;
+      const eta = computeEta(id);
+      const etaEl = tr.querySelector(".eta");
+      if (etaEl) etaEl.textContent = formatEta(eta);
+    }
+  }
+  if (anyActive) updateZipVisibility();
+}, 5000);
 
 // --- upload selection ----------------------------------------------------
 dropzone.addEventListener("click", () => fileInput.click());
@@ -87,6 +109,77 @@ function connectEvents() {
   es.onerror = () => { es.close(); setTimeout(connectEvents, 2000); };
 }
 
+// --- ETA helpers -----------------------------------------------------------
+const STAGE_WEIGHTS = { transcribing: 0.225, matching: 0.50, aligning: 0.65, refining: 0.825, editing: 0.90, completed: 1.0 };
+
+function trackStage(job) {
+  const st = jobState.get(job.id);
+  if (!st) return;
+  const pct = job.progress ?? 0;
+  if (job.started_at && pct > 0 && !st.startedAt) st.startedAt = job.started_at * 1000;
+  let stage = job.stage;
+  if (pct >= 45 && stage === "queued") stage = "transcribing";
+  st.currentStage = stage;
+  st.active = job.status === "processing";
+  st.progress = pct;
+}
+
+function computeEta(jobId) {
+  const st = jobState.get(jobId);
+  if (!st || !st.startedAt) return null;
+  const pct = st.progress ?? 0;
+  if (pct <= 0 || pct >= 100) return null;
+  const elapsed = (Date.now() - st.startedAt) / 1000;
+  const clip = st.clipDuration || 120;
+  const stageName = st.currentStage || "transcribing";
+  return estimateRemaining(clip, stageName, pct, elapsed);
+}
+
+function estimateRemaining(clipSeconds, currentStage, progressPct, elapsedSecs) {
+  const progressFrac = progressPct / 100;
+  if (progressFrac <= 0 || progressFrac >= 1) return null;
+  const lo = clipSeconds * 0.5, hi = clipSeconds * 1.5;
+  const similar = historyMetrics.filter(m => m.clip_seconds >= lo && m.clip_seconds <= hi);
+  if (similar.length > 0) return estimateFromHistory(similar, clipSeconds, currentStage, progressFrac, elapsedSecs);
+  const totalEst = elapsedSecs / Math.max(0.01, progressFrac);
+  return Math.max(0, totalEst * (1 - progressFrac));
+}
+
+function estimateFromHistory(similar, clipSeconds, currentStage, progressFrac, elapsedSecs) {
+  const stageOrder = ["transcribing", "matching", "aligning", "refining", "editing"];
+  const curIdx = stageOrder.indexOf(currentStage);
+  const ratios = [];
+  for (const m of similar) {
+    const stages = m.stages;
+    let remaining = 0;
+    if (curIdx >= 0) {
+      const curStageTime = stages[currentStage] || 0;
+      if (curStageTime > 0) {
+        const prevMid = curIdx > 0 ? STAGE_WEIGHTS[stageOrder[curIdx - 1]] : 0;
+        const range = Math.max((STAGE_WEIGHTS[currentStage] || progressFrac) - prevMid, 0.01);
+        const done = Math.min(1, Math.max(0, (progressFrac - prevMid) / range));
+        remaining += curStageTime * (1 - done);
+      }
+      for (let i = curIdx + 1; i < stageOrder.length; i++) remaining += stages[stageOrder[i]] || 0;
+    }
+    if (remaining > 0) {
+      const total = Object.values(stages).reduce((a, b) => a + b, 0);
+      ratios.push(remaining / Math.max(0.01, total));
+    }
+  }
+  if (ratios.length === 0) return null;
+  const avg = ratios.reduce((a, b) => a + b, 0) / ratios.length;
+  return Math.max(0, clipSeconds * avg);
+}
+
+function formatEta(secs) {
+  if (secs == null || secs < 0) return "";
+  secs = Math.round(secs);
+  if (secs < 5) return "";
+  if (secs < 60) return `~${secs}s left`;
+  return `~${Math.floor(secs / 60)}m ${secs % 60}s left`;
+}
+
 // --- table rendering -------------------------------------------------------
 function renderRow(job) {
   let tr = rows.get(job.id);
@@ -99,11 +192,26 @@ function renderRow(job) {
       <td>
         <div class="progress-track"><div class="progress-bar"></div></div>
         <span class="stage"></span>
+        <span class="eta"></span>
       </td>
       <td class="row-actions" style="white-space:nowrap; text-align:right;"></td>`;
     jobsBody.prepend(tr);
     rows.set(job.id, tr);
   }
+
+  if (!jobState.has(job.id)) {
+    jobState.set(job.id, {
+      startedAt: null,
+      currentStage: null,
+      active: false,
+      progress: 0,
+      clipDuration: 120,
+    });
+  }
+
+  // Seed startedAt from the backend-provided timestamp if present.
+  const st = jobState.get(job.id);
+  if (job.started_at && !st.startedAt) st.startedAt = job.started_at * 1000;
 
   tr.querySelector(".name").textContent = job.filename || job.id;
   const chip = tr.querySelector(".chip");
@@ -115,8 +223,26 @@ function renderRow(job) {
   bar.style.background =
     job.status === "failed" ? "var(--err)" :
     job.status === "completed" ? "var(--ok)" : "var(--accent)";
-  tr.querySelector(".stage").textContent = job.detail
-    ? `${job.stage || ""} — ${job.detail}`.replace(/^— /, "") : (job.stage || "");
+
+  const stageEl = tr.querySelector(".stage");
+  const etaEl = tr.querySelector(".eta");
+
+  if (job.status === "queued") {
+    stageEl.textContent = job.detail
+      ? `${job.stage || ""} — ${job.detail}`.replace(/^— /, "") : (job.stage || "");
+    etaEl.textContent = "";
+  } else if (job.status === "processing") {
+    trackStage(job);
+    const eta = computeEta(job.id);
+    stageEl.textContent = job.detail
+      ? `${job.stage || ""} — ${job.detail}`.replace(/^— /, "") : (job.stage || "");
+    etaEl.textContent = formatEta(eta);
+  } else {
+    trackStage(job);
+    stageEl.textContent = job.detail
+      ? `${job.stage || ""} — ${job.detail}`.replace(/^— /, "") : (job.stage || "");
+    etaEl.textContent = "";
+  }
 
   const actions = tr.querySelector(".row-actions");
   actions.innerHTML = "";

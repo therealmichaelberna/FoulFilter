@@ -140,11 +140,14 @@ def _run_job_impl(
         transcript = cached
     else:
         if transcriber is None:
-            from transcriber import get_transcriber
-
-            transcriber = get_transcriber()
-        report("transcribing", 5, "GPU transcription started")
-        segments = transcriber.transcribe(analysis_source)
+            from transcriber import get_transcribers
+            transcribers = get_transcribers()
+        else:
+            transcribers = [transcriber]
+        gpu_label = f"{len(transcribers)} GPU(s)" if len(transcribers) > 1 else "GPU"
+        report("transcribing", 5, f"{gpu_label} transcription started")
+        from transcriber import transcribe_parallel
+        segments = transcribe_parallel(analysis_source, transcribers, scratch_dir)
         transcript = {
             "version": 3,
             "file_hash": digest,
@@ -154,7 +157,7 @@ def _run_job_impl(
 
         if rescan:
             report("transcribing", 42, "Rescan pass (offset boundaries)")
-            shifted = transcriber.transcribe_shifted(analysis_source)
+            shifted = transcribers[0].transcribe_shifted(analysis_source)
             transcript["segments"] = _union_segments(
                 transcript["segments"], shifted
             )
@@ -172,17 +175,19 @@ def _run_job_impl(
     words = list(transcript.get("words") or [])
     if candidates and not words:
         if aligner is None:
-            from aligner import get_aligner
-
-            aligner = get_aligner()
+            from aligner import get_aligners
+            aligners = get_aligners()
+        else:
+            aligners = [aligner]
 
         def align_progress(done, total):
             pct = 55 + int(20 * done / max(1, total))
             report("aligning", pct, f"Alignment batch {done}/{total}")
 
         report("aligning", 55, "Forced alignment started")
-        words = aligner.align_transcript(
-            analysis_source, transcript["segments"], align_progress
+        from aligner import align_transcript_parallel
+        words = align_transcript_parallel(
+            analysis_source, transcript["segments"], aligners, align_progress
         )
 
     # Persist refined transcript for Resume.

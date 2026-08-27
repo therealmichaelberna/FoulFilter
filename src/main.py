@@ -13,10 +13,13 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 import zipfile
 from collections import deque
 from contextlib import asynccontextmanager
+
+import metrics
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -138,8 +141,21 @@ class JobManager:
 
     def _process(self, job):
         job_id = job["id"]
+        started_at = time.time()
         self.update(job_id, status="processing", stage="queued", progress=0,
-                    detail="Starting")
+                    detail="Starting", started_at=started_at)
+        stage_times = {}
+        current_stage = [None]
+        stage_start = [started_at]
+
+        def _on_stage_change(new_stage):
+            now = time.time()
+            if current_stage[0] and current_stage[0] != "completed":
+                elapsed = now - stage_start[0]
+                stage_times[current_stage[0]] = stage_times.get(current_stage[0], 0) + elapsed
+            current_stage[0] = new_stage
+            stage_start[0] = now
+
         try:
             summary = run_job(
                 input_path=job["input_path"],
@@ -150,8 +166,9 @@ class JobManager:
                 censor_method=job["censor_method"],
                 debug=job["debug"],
                 rescan=job["rescan"],
-                progress=self._progress_for(job_id),
+                progress=self._progress_for(job_id, _on_stage_change),
             )
+            _on_stage_change("completed")
             self.update(
                 job_id,
                 status="completed",
@@ -166,14 +183,27 @@ class JobManager:
             logger.info("Job %s cancelled", job_id)
             self.update(job_id, status="cancelled", detail="Cancelled by user")
             _delete_job_files(job_id)
+            return
         except Exception as exc:  # noqa: BLE001 - report every failure to the UI
             logger.exception("Job %s failed", job_id)
             self.update(job_id, status="failed", detail=str(exc)[:500])
             _delete_job_files(job_id, keep_output=False)
+            return
 
-    def _progress_for(self, job_id):
+        # Record metrics for ETA learning
+        try:
+            clip_secs = summary.get("transcript_words", 0) * 0.3
+            if not clip_secs:
+                clip_secs = time.time() - started_at
+            metrics.record_job(clip_secs, stage_times)
+        except Exception:  # noqa: BLE001
+            logger.debug("Metrics recording failed", exc_info=True)
+
+    def _progress_for(self, job_id, on_stage_change=None):
         def cb(stage, percent, detail=""):
             self.check_cancel(job_id)
+            if on_stage_change:
+                on_stage_change(stage)
             self.update(job_id, stage=stage, progress=int(percent), detail=detail)
         return cb
 
@@ -403,6 +433,11 @@ async def config():
         "whisper_model": os.getenv("WHISPER_MODEL") or "base",
         "max_upload_mb": MAX_UPLOAD_MB,
     }
+
+
+@app.get("/metrics")
+async def get_metrics():
+    return metrics.get_metrics()
 
 
 @app.get("/")
