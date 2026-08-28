@@ -23,6 +23,7 @@ import metrics
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 
 from pipeline import JobCancelled, run_job
@@ -388,19 +389,15 @@ async def download_zip(ids: str):
         path=tmp.name,
         filename="foulfilter_results.zip",
         media_type="application/zip",
-        background=_BackgroundRemove(tmp.name),
+        background=BackgroundTask(_remove_file, tmp.name),
     )
 
 
-class _BackgroundRemove:
-    def __init__(self, path):
-        self.path = path
-
-    def __call__(self):
-        try:
-            os.remove(self.path)
-        except OSError:
-            pass
+def _remove_file(path: str):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 @app.get("/events")
