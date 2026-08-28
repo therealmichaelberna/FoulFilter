@@ -24,6 +24,58 @@ def _probe_sample_rate(path):
     return int(stream["sample_rate"])
 
 
+def _probe_audio_stream(path):
+    """Return the first audio stream's format dict from ffprobe."""
+    probe = ffmpeg.probe(path)
+    stream = next(
+        (s for s in probe["streams"] if s["codec_type"] == "audio"), None
+    )
+    if not stream:
+        raise ValueError(f"No audio stream found in {path}")
+    return stream
+
+
+def _audio_encoder_args(path):
+    """ffmpeg args that preserve the source audio's codec/bitrate/layout.
+
+    Sub-second censor edits (volume/atrim/concat/sine) force a re-encode; true
+    -c:a copy is impossible for mid-packet cuts (see ADR-0006). To avoid the
+    drastic size shrink of ffmpeg's default encoder settings, we re-encode with
+    the source's codec, sample rate, channels and bitrate so the output
+    size/quality closely matches the input.
+    """
+    stream = _probe_audio_stream(path)
+    args = []
+
+    codec = stream.get("codec_name")
+    if codec:
+        codec_map = {
+            "mp3": "libmp3lame",
+            "aac": "aac",
+            "flac": "flac",
+            "opus": "libopus",
+            "vorbis": "libvorbis",
+            "pcm_s16le": "pcm_s16le",
+            "pcm_s24le": "pcm_s24le",
+            "pcm_s32le": "pcm_s32le",
+        }
+        args += ["-c:a", codec_map.get(codec, codec)]
+
+    bit_rate = stream.get("bit_rate")
+    if bit_rate:
+        args += ["-b:a", str(bit_rate)]
+
+    sample_rate = stream.get("sample_rate")
+    if sample_rate:
+        args += ["-ar", str(sample_rate)]
+
+    channels = stream.get("channels")
+    if channels:
+        args += ["-ac", str(channels)]
+
+    return args
+
+
 def _volume_chain(hits):
     """volume=0 filters gated by between(t,start,end), comma-joined."""
     return ",".join(
@@ -90,18 +142,20 @@ def censor_audio(input_path, hits, method="silence", output_path=None):
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-i", input_path,
                 "-filter_complex", graph,
-                "-map", "[out]", output_path,
+                "-map", "[out]",
+                *_audio_encoder_args(input_path),
+                output_path,
             ]
         )
     elif method == "bleep":
-        sample_rate = _probe_sample_rate(input_path)
-        _ = sample_rate  # graph normalizes internally
         _run(
             [
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-i", input_path,
                 "-filter_complex", build_bleep_filter(hits),
-                "-map", "[out]", output_path,
+                "-map", "[out]",
+                *_audio_encoder_args(input_path),
+                output_path,
             ]
         )
     else:
@@ -110,7 +164,9 @@ def censor_audio(input_path, hits, method="silence", output_path=None):
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-i", input_path,
                 "-filter_complex", f"[0:a]{build_silence_filter(hits)}[aout]",
-                "-map", "[aout]", output_path,
+                "-map", "[aout]",
+                *_audio_encoder_args(input_path),
+                output_path,
             ]
         )
     return output_path
@@ -130,7 +186,9 @@ def censor_video(input_path, hits, method="silence", output_path=None):
                     "ffmpeg", "-y", "-loglevel", "error",
                     "-i", input_path, "-vn",
                     "-filter_complex", build_bleep_filter(hits),
-                    "-map", "[out]", tmp_audio,
+                    "-map", "[out]",
+                    *_audio_encoder_args(input_path),
+                    tmp_audio,
                 ]
             )
             from video_edit import replace_audio_in_video
@@ -141,7 +199,7 @@ def censor_video(input_path, hits, method="silence", output_path=None):
                 os.remove(tmp_audio)
         return output_path
 
-    # silence / remove-fallback: filter in place, stream-copy video
+    # silence / remove-fallback: filter audio, stream-copy video, keep audio codec
     _run(
         [
             "ffmpeg", "-y", "-loglevel", "error",
@@ -149,6 +207,7 @@ def censor_video(input_path, hits, method="silence", output_path=None):
             "-filter_complex",
             f"[0:a]{build_silence_filter(hits)}[aout]",
             "-map", "0:v", "-map", "[aout]", "-c:v", "copy",
+            *_audio_encoder_args(input_path),
             output_path,
         ]
     )
