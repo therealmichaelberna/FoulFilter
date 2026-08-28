@@ -47,12 +47,51 @@ def build_batches(segments, max_segments=BATCH_SEGMENTS, max_span=BATCH_MAX_SPAN
     of last) so the wav2vec2 encoder never processes a window large enough to
     OOM the GPU. Gaps between segments are included in the span because the
     whole window is aligned together.
+
+    A single segment spanning more than `max_span` is itself split into
+    smaller pseudo-segments (Whisper sometimes emits one long "paragraph"
+    segment of 100+s). Text is split roughly proportionally by word count so
+    the aligner gets bounded windows regardless of source segment size.
     """
     if not segments:
         return []
+
+    def _split_oversized(seg):
+        span = seg["end"] - seg["start"]
+        if span <= max_span:
+            return [seg]
+        words = seg.get("text", "").split()
+        if not words:
+            return [seg]
+        n_parts = int(span / max_span) + 1
+        part_len = span / n_parts
+        out = []
+        for i in range(n_parts):
+            lo = i * len(words) // n_parts
+            hi = (i + 1) * len(words) // n_parts
+            piece = words[lo:hi]
+            if not piece:
+                continue
+            from_i = lo / len(words)
+            to_i = hi / len(words)
+            out.append(
+                {
+                    "start": round(seg["start"] + from_i * span, 3),
+                    "end": round(seg["start"] + to_i * span, 3),
+                    "text": " ".join(piece),
+                }
+            )
+        return out
+
+    expanded = []
+    for seg in segments:
+        expanded.extend(_split_oversized(seg))
+    if not expanded:
+        return []
+
     batches = []
-    cur = [segments[0]]
-    for seg in segments[1:]:
+    cur = [expanded[0]]
+    for seg in expanded[1:]:
         span = (seg["end"] - cur[0]["start"])
         if len(cur) >= max_segments or span > max_span:
             batches.append(cur)
