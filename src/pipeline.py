@@ -166,6 +166,13 @@ def _run_job_impl(
                 len(transcript["segments"]),
             )
 
+        # Checkpoint: persist segments immediately. Alignment is expensive and
+        # may be skipped or fail; saving now means a later Resume reuses the
+        # transcription and only redoes matching/alignment, not the GPU pass.
+        _persist_transcript(
+            transcript, transcript_dir, digest, base_name, logger
+        )
+
     # --- Match candidates against segment text ---
     report("matching", 50, "Matching Bad Words List")
     candidates = detector.find_candidates(transcript["segments"], bad_words)
@@ -190,16 +197,33 @@ def _run_job_impl(
             analysis_source, transcript["segments"], aligners, align_progress
         )
 
-    # Persist refined transcript for Resume.
+    # Persist refined transcript for Resume (segments + aligned words).
     transcript["words"] = words
-    with open(transcript_path_for(transcript_dir, digest, base_name), "w") as f:
-        json.dump(transcript, f)
+    _persist_transcript(transcript, transcript_dir, digest, base_name, logger)
 
     # --- Confirm hits (precise times when aligned, estimates otherwise) ---
+    # With best-effort alignment, some candidates may lack precise word
+    # timestamps. Match each candidate occurrence to aligned hits by
+    # (phrase, approximate position); fall back to segment estimates for any
+    # occurrence without an aligned match, so nothing flagged is dropped.
     hits = detector.find_hits(words, bad_words) if words else []
-    aligned_phrases = {h["phrase"] for h in hits} if words else set()
-    missing = [c for c in candidates if not words or c["phrase"] not in aligned_phrases]
-    for cand in missing:
+
+    def _hit_covers(cand, hit):
+        # A hit covers a candidate if same phrase and spans overlap loosely.
+        return hit["phrase"] == cand["phrase"] and not (
+            hit["end"] < cand["approx_start"]
+            or hit["start"] > cand["approx_end"]
+        )
+
+    covered = [False] * len(candidates)
+    for hidx, hit in enumerate(hits):
+        for cidx, cand in enumerate(candidates):
+            if not covered[cidx] and _hit_covers(cand, hit):
+                covered[cidx] = True
+                break
+    for cidx, cand in enumerate(candidates):
+        if covered[cidx]:
+            continue
         logger.warning(
             "No aligned timestamps for '%s'; using segment estimate", cand["phrase"]
         )
@@ -327,6 +351,31 @@ def _extract_audio(video_path, out_path):
         ],
         check=True,
     )
+
+
+def _persist_transcript(transcript, transcript_dir, digest, base_name, logger=None):
+    """Write/overwrite the persisted transcript for Resume.
+
+    Called right after transcription (segments-only checkpoint) and again
+    after alignment (segments + words). Multiple calls are safe: the final
+    aligned version wins, and the file hash guards against partial writes
+    being reused (find_cached_transcript verifies file_hash).
+    """
+    path = transcript_path_for(transcript_dir, digest, base_name)
+    os.makedirs(transcript_dir, exist_ok=True)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(transcript, f)
+        os.replace(tmp, path)
+    except OSError as exc:
+        if logger:
+            logger.warning("Could not persist transcript to %s: %s", path, exc)
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 
 def _safe(name):

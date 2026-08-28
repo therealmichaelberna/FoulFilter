@@ -21,8 +21,23 @@ _aligner = None
 _aligners = []
 
 BATCH_SEGMENTS = 50
-BATCH_MAX_SPAN = 120  # max audio seconds per alignment batch to bound VRAM
+BATCH_MAX_SPAN = 60  # max audio seconds per alignment batch to bound VRAM
 BATCH_PAD = 0.5
+
+# Alignment is best-effort: if a window still OOMs we split it and retry
+# smaller; if it ultimately cannot fit, we return no words for that span so
+# the pipeline falls back to segment-level timestamps rather than crashing.
+MAX_ALIGN_RETRIES = 3
+
+
+def _is_oom(exc):
+    import torch
+
+    return isinstance(exc, torch.cuda.OutOfMemoryError) or (
+        "out of memory" in str(exc).lower()
+        or "HIPCachingAllocator" in str(exc)
+        or "CUDA out of memory" in str(exc)
+    )
 
 
 def build_batches(segments, max_segments=BATCH_SEGMENTS, max_span=BATCH_MAX_SPAN):
@@ -68,25 +83,73 @@ class Aligner:
         logger.info("Alignment model ready on %s.", self.device)
 
     def align_transcript(self, source_audio, segments, progress=None):
-        """Align every segment; returns absolute-time words.
+        """Align every segment best-effort; returns absolute-time words.
 
         segments: [{start, end, text}] covering the transcript.
         progress(done, total) is called after each batch.
+
+        If a batch cannot be aligned (out of memory), it is skipped and its
+        segments are left unaligned so the pipeline can use estimates.
         """
         words = []
         batches = build_batches(segments)
         for idx, batch in enumerate(batches):
-            span_start = max(0.0, batch[0]["start"] - BATCH_PAD)
-            span_end = batch[-1]["end"] + BATCH_PAD
-            words.extend(
-                self._align_span(
-                    source_audio, span_start, span_end - span_start, batch
-                )
-            )
+            try:
+                words.extend(self._align_batch_resilient(source_audio, batch))
+            except Exception as exc:  # noqa: BLE001 - never crash a job on alignment
+                logger.warning("Alignment batch failed (%s); using estimates", exc)
             if progress:
                 progress(idx + 1, len(batches))
         words.sort(key=lambda w: w["start"])
         return words
+
+    def _align_batch_resilient(self, source_audio, batch):
+        """Align one batch, retrying with halved audio spans on OOM.
+
+        Returns a flat list of words (possibly fewer than expected if some
+        sub-windows could not be aligned). Never raises on OOM.
+        """
+        span_start = max(0.0, batch[0]["start"] - BATCH_PAD)
+        span_end = batch[-1]["end"] + BATCH_PAD
+        try:
+            return self._align_span(
+                source_audio, span_start, span_end - span_start, batch
+            )
+        except Exception as exc:  # noqa: BLE001
+            if not _is_oom(exc):
+                raise
+            import torch
+            torch.cuda.empty_cache()
+            logger.warning(
+                "Alignment OOM on %ds window; retrying smaller",
+                span_end - span_start,
+            )
+            return self._align_split_recurse(source_audio, batch, 0)
+
+    def _align_split_recurse(self, source_audio, batch, depth):
+        """Split the span in half and align each half; handled OOM gracefully."""
+        if depth >= MAX_ALIGN_RETRIES:
+            return []
+        if len(batch) <= 1:
+            return []
+        mid = len(batch) // 2
+        first, second = batch[:mid], batch[mid:]
+        out = []
+        for half in (first, second):
+            if not half:
+                continue
+            s0 = max(0.0, half[0]["start"] - BATCH_PAD)
+            s1 = half[-1]["end"] + BATCH_PAD
+            try:
+                out.extend(self._align_span(source_audio, s0, s1 - s0, half))
+            except Exception as exc:  # noqa: BLE001
+                if not _is_oom(exc):
+                    raise
+                import torch
+                torch.cuda.empty_cache()
+                logger.warning("Alignment OOM on sub-window; retrying smaller")
+                out.extend(self._align_split_recurse(source_audio, half, depth + 1))
+        return out
 
     def _align_span(self, source_audio, offset, duration, segments):
         """Align a cropped span of audio; returns rebased absolute words."""
@@ -144,9 +207,11 @@ class Aligner:
 def _align_batch_task(args):
     """Align a single batch on a specific Aligner. Returns list of words."""
     aligner, source_audio, batch = args
-    span_start = max(0.0, batch[0]["start"] - BATCH_PAD)
-    span_end = batch[-1]["end"] + BATCH_PAD
-    return aligner._align_span(source_audio, span_start, span_end - span_start, batch)
+    try:
+        return aligner._align_batch_resilient(source_audio, batch)
+    except Exception as exc:  # noqa: BLE001 - never crash a job on alignment
+        logger.warning("Alignment batch failed (%s); using estimates", exc)
+        return []
 
 
 def align_transcript_parallel(source_audio, segments, aligners, progress=None):
